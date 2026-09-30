@@ -1,0 +1,326 @@
+services:
+
+  # ============================================================
+  # PROMETHEUS SHARD A
+  # ============================================================
+
+  prometheus-shard-a:
+    image: prom/prometheus:latest
+    container_name: prometheus-shard-a
+    ports:
+      - "9091:9090"
+
+    volumes:
+      - ./prometheus/shard-a.yml:/etc/prometheus/prometheus.yml
+      - ./prometheus/recording.rules.yml:/etc/prometheus/recording.rules.yml
+      - prometheus-a-data:/prometheus
+
+    networks:
+      - monitoring
+
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+
+
+  # ============================================================
+  # PROMETHEUS SHARD B
+  # ============================================================
+
+  prometheus-shard-b:
+    image: prom/prometheus:latest
+    container_name: prometheus-shard-b
+    ports:
+      - "9092:9090"
+
+    volumes:
+      - ./prometheus/shard-b.yml:/etc/prometheus/prometheus.yml
+      - ./prometheus/recording.rules.yml:/etc/prometheus/recording.rules.yml
+      - prometheus-b-data:/prometheus
+
+    networks:
+      - monitoring
+
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+
+
+  # ============================================================
+  # GLOBAL PROMETHEUS
+  # ============================================================
+
+  prometheus-global:
+    image: prom/prometheus:latest
+    container_name: prometheus-global
+    ports:
+      - "9093:9090"
+
+    volumes:
+      - ./prometheus/global.yml:/etc/prometheus/prometheus.yml
+      - prometheus-global-data:/prometheus
+
+    networks:
+      - monitoring
+
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+
+
+  # ============================================================
+  # NODE EXPORTERS - SHARD A
+  # ============================================================
+
+  node-a1:
+    image: prom/node-exporter:latest
+    container_name: node-a1
+    networks:
+      - monitoring
+
+
+  node-a2:
+    image: prom/node-exporter:latest
+    container_name: node-a2
+    networks:
+      - monitoring
+
+
+  # ============================================================
+  # NODE EXPORTERS - SHARD B
+  # ============================================================
+
+  node-b1:
+    image: prom/node-exporter:latest
+    container_name: node-b1
+    networks:
+      - monitoring
+
+
+  node-b2:
+    image: prom/node-exporter:latest
+    container_name: node-b2
+    networks:
+      - monitoring
+
+
+  # ============================================================
+  # MINIO OBJECT STORAGE
+  # ============================================================
+
+  minio:
+    image: minio/minio:RELEASE.2025-04-22T22-12-26Z
+    container_name: minio
+
+    command:
+      - "server"
+      - "/data"
+      - "--console-address"
+      - ":9001"
+
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin123
+
+    volumes:
+      - minio-data:/data
+
+    networks:
+      - monitoring
+
+
+  # ============================================================
+  # MINIO BUCKET INITIALIZATION
+  # ============================================================
+
+  minio-init:
+    image: minio/mc:RELEASE.2025-05-21T01-59-54Z
+    container_name: minio-init
+
+    depends_on:
+      - minio
+
+    networks:
+      - monitoring
+
+    entrypoint: >
+      /bin/sh -c "
+      sleep 5;
+      mc alias set local http://minio:9000 minioadmin minioadmin123;
+      mc mb --ignore-existing local/thanos-lab;
+      echo 'MinIO bucket thanos-lab is ready';
+      "
+
+
+  # ============================================================
+  # THANOS SIDECAR - SHARD A
+  # ============================================================
+
+  thanos-sidecar-a:
+    image: quay.io/thanos/thanos:v0.35.1
+    container_name: thanos-sidecar-a
+
+    depends_on:
+      - prometheus-shard-a
+      - minio
+      - minio-init
+
+    command:
+      - "sidecar"
+      - "--tsdb.path=/prometheus"
+      - "--prometheus.url=http://prometheus-shard-a:9090"
+      - "--objstore.config-file=/etc/thanos/objstore.yml"
+      - "--grpc-address=0.0.0.0:10901"
+
+    volumes:
+      - prometheus-a-data:/prometheus
+      - ./prometheus/objstore.yml:/etc/thanos/objstore.yml
+
+    ports:
+      - "10901:10901"
+
+    networks:
+      - monitoring
+
+
+  # ============================================================
+  # THANOS SIDECAR - SHARD B
+  # ============================================================
+
+  thanos-sidecar-b:
+    image: quay.io/thanos/thanos:v0.35.1
+    container_name: thanos-sidecar-b
+
+    depends_on:
+      - prometheus-shard-b
+      - minio
+      - minio-init
+
+    command:
+      - "sidecar"
+      - "--tsdb.path=/prometheus"
+      - "--prometheus.url=http://prometheus-shard-b:9090"
+      - "--objstore.config-file=/etc/thanos/objstore.yml"
+      - "--grpc-address=0.0.0.0:10901"
+
+    volumes:
+      - prometheus-b-data:/prometheus
+      - ./prometheus/objstore.yml:/etc/thanos/objstore.yml
+
+    ports:
+      - "10904:10901"
+
+    networks:
+      - monitoring
+
+
+  # ============================================================
+  # THANOS STORE GATEWAY
+  # ============================================================
+
+  thanos-store:
+    image: quay.io/thanos/thanos:v0.35.1
+    container_name: thanos-store
+
+    depends_on:
+      - minio
+      - minio-init
+
+    command:
+      - "store"
+      - "--data-dir=/var/thanos/store"
+      - "--objstore.config-file=/etc/thanos/objstore.yml"
+      - "--grpc-address=0.0.0.0:10901"
+      - "--http-address=0.0.0.0:10902"
+
+    volumes:
+      - ./prometheus/objstore.yml:/etc/thanos/objstore.yml
+      - thanos-store-data:/var/thanos/store
+
+    ports:
+      - "10903:10902"
+
+    networks:
+      - monitoring
+
+
+  # ============================================================
+  # THANOS QUERIER
+  # ============================================================
+
+  thanos-query:
+    image: quay.io/thanos/thanos:v0.35.1
+    container_name: thanos-query
+
+    depends_on:
+      - thanos-sidecar-a
+      - thanos-sidecar-b
+      - thanos-store
+
+    command:
+      - "query"
+      - "--http-address=0.0.0.0:10902"
+      - "--query.replica-label=replica"
+      - "--endpoint=thanos-sidecar-a:10901"
+      - "--endpoint=thanos-sidecar-b:10901"
+      - "--endpoint=thanos-store:10901"
+
+    ports:
+      - "10902:10902"
+
+    networks:
+      - monitoring
+
+
+  # ============================================================
+  # THANOS COMPACTOR
+  # ============================================================
+
+  thanos-compact:
+    image: quay.io/thanos/thanos:v0.35.1
+    container_name: thanos-compact
+
+    depends_on:
+      - minio
+      - minio-init
+
+    command:
+      - "compact"
+      - "--wait"
+      - "--data-dir=/var/thanos/compact"
+      - "--objstore.config-file=/etc/thanos/objstore.yml"
+      - "--retention.resolution-raw=15d"
+      - "--retention.resolution-5m=90d"
+      - "--retention.resolution-1h=13mo"
+
+    volumes:
+      - ./prometheus/objstore.yml:/etc/thanos/objstore.yml
+      - thanos-compact-data:/var/thanos/compact
+
+    networks:
+      - monitoring
+
+
+# ==============================================================
+# NETWORK
+# ==============================================================
+
+networks:
+  monitoring:
+
+
+# ==============================================================
+# PERSISTENT VOLUMES
+# ==============================================================
+
+volumes:
+  prometheus-a-data:
+  prometheus-b-data:
+  prometheus-global-data:
+  minio-data:
+  thanos-store-data:
+  thanos-compact-data:

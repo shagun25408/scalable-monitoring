@@ -1,0 +1,23 @@
+groups:
+  - name: aggregates
+    interval: 30s
+
+    rules:
+      - record: job:node_cpu_utilisation:avg5m
+        expr: |
+          100 - avg by (job)
+          (rate(node_cpu_seconds_total{mode="idle"}[5m])) * 100
+
+      - record: job:node_memory_utilisation:avg5m
+        expr: |
+          avg by (job) (1 - (node_memory_MemAvailable_bytes
+          / node_memory_MemTotal_bytes)) * 100
+
+      - record: job:http_requests:rate5m
+        expr: |
+          sum by (job, status) (rate(http_requests_total[5m]))
+
+      - record: job:http_request_duration_seconds:p95
+        expr: |
+          histogram_quantile(0.95, sum by (job, le)
+          (rate(http_request_duration_seconds_bucket[5m])))

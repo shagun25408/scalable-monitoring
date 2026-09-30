@@ -1,0 +1,36 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+  external_labels:
+    shard: shard-a
+    region: ap-south-1
+    replica: r1
+
+rule_files:
+  - /etc/prometheus/recording.rules.yml
+
+scrape_configs:
+  - job_name: 'node'
+    static_configs:
+      - targets:
+          - 'node-a1:9100'
+          - 'node-a2:9100'
+
+    metric_relabel_configs:
+      - regex: '(request_id|session_id|user_id|trace_id)'
+        action: labeldrop
+
+      - source_labels: [__name__]
+        regex: 'go_gc_duration_seconds.*|promhttp_metric_handler.*'
+        action: drop
+
+      - source_labels: [path]
+        regex: '/api/customers/[0-9]+/orders'
+        target_label: path
+        replacement: '/api/customers/:id/orders'
+
+  - job_name: 'prometheus'
+    static_configs:
+      - targets:
+          - 'prometheus-shard-a:9090'
